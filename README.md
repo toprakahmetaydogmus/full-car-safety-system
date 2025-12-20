@@ -1,9 +1,12 @@
-🚗 TOPRAK – Akıllı Araba Asistanı
-https://img.shields.io/badge/TOPRAK-Ak%C4%B1ll%C4%B1%2520Araba%2520Asistan%C4%B1-blue https://img.shields.io/badge/Version-2.0-green
-https://img.shields.io/badge/License-MIT-yellow
-https://img.shields.io/badge/Platform-ESP32-red
-https://img.shields.io/badge/Arduino-Compatible-orange
-ESP32 Tabanlı Gelişmiş Araç İçi Sensör ve Uyarı Sistemi
+# 🚗 TOPRAK – Akıllı Araba Asistanı
+
+![TOPRAK – Akıllı Araba Asistanı](https://img.shields.io/badge/TOPRAK-Ak%C4%B1ll%C4%B1%2520Araba%2520Asistan%C4%B1-blue)
+![Version 2.0](https://img.shields.io/badge/Version-2.0-green)
+![License MIT](https://img.shields.io/badge/License-MIT-yellow)
+![Platform ESP32](https://img.shields.io/badge/Platform-ESP32-red)
+![Arduino Compatible](https://img.shields.io/badge/Arduino-Compatible-orange)
+
+ESP32 tabanlı gelişmiş araç içi sensör ve uyarı sistemi.
 
 📌 Proje Özeti
 
