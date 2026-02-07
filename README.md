@@ -233,3 +233,231 @@ Bu proje yaşayan bir sistem olarak tasarlanmıştır.
 
 # full-car-safety-system
 car assistant, esp32, iot, embedded systems,  smart vehicle, arduino, sensor, security, automotive,  turkish project, open source, electronics, robotics
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+# 🚗 TOPRAK – Smart Car Assistant
+
+![TOPRAK – Smart Car Assistant](https://img.shields.io/badge/TOPRAK-Ak%C4%B1ll%C4%B1%2520Araba%2520Asistan%C4%B1-blue)
+![Version 2.0](https://img.shields.io/badge/Version-2.0-green)
+![License MIT](https://img.shields.io/badge/License-MIT-yellow)
+![Platform ESP32](https://img.shields.io/badge/Platform-ESP32-red)
+![Arduino Compatible](https://img.shields.io/badge/Arduino-Compatible-orange)
+
+Advanced in-vehicle sensor and warning system based on ESP32.
+
+📌 Project Summary
+
+TOPRAK – Smart Car Assistant is an integrated in-vehicle assistance system developed using the ESP32 microcontroller;
+measuring distance, air quality, temperature, and humidity,
+features an OLED screen, joystick control, and an audible and visual warning system.
+
+The system processes real-time sensor data, generates warnings based on user-adjustable threshold values, and offers an intuitive menu interface.
+
+This project was developed for training, prototyping, and R&D purposes in the following areas:
+
+Embedded systems
+
+IoT
+
+In-vehicle electronics
+
+HMI (Human-Machine Interface)
+
+🎯 Key Features
+
+📏 Distance Measurement (HC-SR04)
+
+Instant distance measurement (cm)
+
+Caution & danger thresholds
+
+Graphical bar display
+
+🌫 Air Quality Measurement (MQ-135)
+
+Gas level in ppm
+
+Quality classification (Good / Medium / Poor)
+
+Adjustable warning threshold
+
+🌡 Temperature & Humidity (DHT11)
+
+°C and %RH measurement
+
+Overheating warning
+
+🧠 Smart Alert System
+
+Multi-level alerts
+
+Audible (buzzer) + visual (LED) notification
+
+Silent mode support
+
+🕹 Joystick Controlled Menu
+
+Up/Down: Menu navigation
+
+Right/Left: Value change
+
+Press: Select / On/Off
+
+🤖 Animated Robot Character
+
+Blinking animation
+
+Facial expression according to alert
+
+System status Visualization
+
+🖥 OLED Graphical Interface
+
+128x64 SSD1306
+
+Multiple displays
+Bar graphs and icons
+
+🧩 Hardware Used
+Hardware Description
+ESP32 Main controller
+HC-SR04 Ultrasonic distance sensor
+MQ-135 Air quality / gas sensor
+DHT11 Temperature & humidity sensor
+SSD1306 OLED 128x64 I2C display
+Joystick Module Menu control
+Buzzer Audible alert
+LED System / warning indicator
+🔌 Pin Connections
+Component ESP32 Pin
+OLED SDA GPIO 21
+OLED SCL GPIO 22
+Joystick X GPIO 34
+Joystick Y GPIO 35
+Joystick Button GPIO 32
+Back Button GPIO 18
+HC-SR04 TRIG GPIO 13
+HC-SR04 ECHO GPIO 12
+MQ-135 GPIO 36 (ADC)
+DHT11 GPIO 14
+Buzzer GPIO 15
+System LED GPIO 2
+
+⚠️ Note: ESP32 ADC pins are for analog input only. MQ-135 is therefore connected to GPIO 36.
+Source: Espressif ESP32 Datasheet
+
+🕹 Controls
+Control Function
+D18 Button Always on main menu
+Joystick Up/Down Menu navigation
+Joystick Right/Left Change setting
+Joystick Press Select / On / Off
+⚙️ Menu Structure
+
+Main Menu
+
+Distance Display
+
+Gas Display
+
+Temperature Display
+
+Distance Settings
+
+Gas Settings
+
+Temperature Settings
+
+Sound Adjustment
+
+Each setting:
+
+Real-time changeable
+
+Operates on RAM without using EEPROM
+
+Immediately affects the warning system
+
+🔊 Warning Logic
+Level Status Response
+0 Normal Silent
+1 Caution Slow beep
+2 Danger Fast beep + LED
+The sound system can be completely turned off.
+
+📟 Serial Port Outputs
+
+The system writes data to the serial port every 1 second in the following format:
+
+M:45cm G:620ppm S:28C
+
+This output can be used for:
+
+Debugging
+
+Logging
+
+External system integration
+
+
+🧪 Tested Environment
+
+Arduino IDE 2.x
+
+ESP32 Core v2.x
+
+Adafruit SSD1306 Library
+
+Adafruit GFX Library
+
+DHT Sensor Library
+
+All libraries have been verified via Arduino Library Manager.
+
+🚀 Installation
+
+Install Arduino IDE
+
+Add ESP32 Board Manager
+
+Install necessary libraries
+
+Upload code
+
+Serial speed: 115200 baud
+
+⚠️ Legal & Security Notice
+
+This project is for:
+
+Educational
+
+Experimental
+
+Prototyping
+
+purposes.
+
+Before direct integration into real vehicles:
+
+Electrical insulation
+
+Automotive standards
+
+EMC tests
+
+must be performed.
+
+👤 Developer
+Toprak Ahmet Aydoğmuş
+Cyber ​​Security & Embedded Systems
+
+🔗 GitHub: https://github.com/toprakahmetaydogmus
+
+🔗 LinkedIn: https://www.linkedin.com/in/toprak-ahmet-aydoğmuş-60462534b/
+
+⭐ Contributions & Development
+
+Pull requests, improvements, and new ideas are welcome. This project is designed as a living system.
+
+#full-car-safety-system
+car assistant, esp32, iot, embedded systems, smart vehicle, arduino, sensor, security, automotive, turkish project, open source, electronics, robotics
