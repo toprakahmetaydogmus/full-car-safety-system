@@ -557,21 +557,21 @@ void updateAlertActuators() {
   digitalWrite(SYS_LED, (now % 1000) < 50 ? HIGH : LOW);
 }
 
-// ==================== İPEKSİ PÜRÜZSÜZ SERVO HAREKETİ ====================
+// ==================== "TIK TIK" HIZLI & SERT GEÇİŞLİ SERVO HAREKETİ ====================
 void updateServoMotor() {
   unsigned long now = millis();
 
   if (manualServoMode) {
-    // Manuel Mod: Joystick X ile doğrudan yönlendirme
-    if (now - lastJoyServoStep >= 20) {
+    // Manuel Mod: Joystick X ile 5'er derecelik güçlü ve kararlı adımlar
+    if (now - lastJoyServoStep >= 25) {
       lastJoyServoStep = now;
       int rawX = analogRead(JOY_X);
       int deltaX = rawX - joyCenterX;
 
-      if (deltaX < -700) {
-        servoAngle += (settings.servoInvert ? 2 : -2);
-      } else if (deltaX > 700) {
-        servoAngle += (settings.servoInvert ? -2 : 2);
+      if (deltaX < -320) {
+        servoAngle += (settings.servoInvert ? 5 : -5);
+      } else if (deltaX > 320) {
+        servoAngle += (settings.servoInvert ? -5 : 5);
       }
 
       servoAngle = constrain(servoAngle, 20, 160);
@@ -579,17 +579,18 @@ void updateServoMotor() {
       stats.servoSteps++;
     }
   } else {
-    // Sürekli Otomatik Sol-Sağ Tarama (20° - 160°) - Her menüde arka planda kesintisiz çalışır!
-    if (now - lastServoStep >= 18) {
+    // "Tık Tık" Hızlı, Sert ve Kararlı Radar Taraması (5'er derecelik adımlar, 22ms seri aralık)
+    // Motor her adımda tam torkla 5 derece zıplar ("tık tık"), seri ve akıcı döner!
+    if (now - lastServoStep >= 22) {
       lastServoStep = now;
       if (scanDirection) {
-        servoAngle++;
+        servoAngle += 5;
         if (servoAngle >= 160) {
           servoAngle = 160;
           scanDirection = false;
         }
       } else {
-        servoAngle--;
+        servoAngle -= 5;
         if (servoAngle <= 20) {
           servoAngle = 20;
           scanDirection = true;
@@ -619,7 +620,7 @@ void readInputControls() {
     lastJoyBtnDebounce = now;
     lastJoyBtnRaw = rawJoyBtn;
   }
-  if ((now - lastJoyBtnDebounce) > 60) {
+  if ((now - lastJoyBtnDebounce) > 30) {
     bool pressed = (rawJoyBtn == LOW);
     if (pressed && !joyBtnState) {
       joyBtnState = true;
@@ -629,7 +630,7 @@ void readInputControls() {
     }
   }
 
-  // D18 Butonu (Kısa basma: Geri / 1.5 sn basma: Sessiz Mod)
+  // D18 Butonu (Kısa basma: Geri / Menüde İlerleme / 1.5 sn basma: Sessiz Mod)
   bool rawBackBtn = digitalRead(BACK_BTN);
   if (rawBackBtn != lastBackBtnRaw) {
     lastBackBtnRaw = rawBackBtn;
@@ -637,7 +638,7 @@ void readInputControls() {
       backBtnPressStart = now;
       backBtnLongHandled = false;
     } else {
-      if (!backBtnLongHandled && (now - backBtnPressStart > 50)) {
+      if (!backBtnLongHandled && (now - backBtnPressStart > 40)) {
         handleBackButtonClick();
       }
     }
@@ -650,40 +651,42 @@ void readInputControls() {
     triggerChirp();
   }
 
-  // Joystick Eksenleri (Edge-Triggered, 35ms Periyot ve Kanal Boşaltma İle ADC İzolasyonu)
+  // Joystick Eksenleri (Hassas ve Kararlı Eşikler: 300 birim)
   static unsigned long lastJoyRead = 0;
-  if (now - lastJoyRead >= 35) {
+  if (now - lastJoyRead >= 25) {
     lastJoyRead = now;
     analogRead(JOY_X);
-    delayMicroseconds(30);
+    delayMicroseconds(20);
     int rawX = analogRead(JOY_X);
 
     analogRead(JOY_Y);
-    delayMicroseconds(30);
+    delayMicroseconds(20);
     int rawY = analogRead(JOY_Y);
 
     int deltaY = rawY - joyCenterY;
     int deltaX = rawX - joyCenterX;
 
-    if (abs(deltaY) < 450) {
-      joyYEngaged = false;
+    // Y Ekseni (Menü Yukarı / Aşağı Gezinme)
+    if (abs(deltaY) < 180) {
+      joyYEngaged = false; // Merkeze döndü, kilit açıldı
     } else if (!joyYEngaged) {
-      if (deltaY < -800) {
+      if (deltaY < -320) {
         joyYEngaged = true;
         handleJoyUp();
-      } else if (deltaY > 800) {
+      } else if (deltaY > 320) {
         joyYEngaged = true;
         handleJoyDown();
       }
     }
 
-    if (abs(deltaX) < 450) {
-      joyXEngaged = false;
+    // X Ekseni (Ayar Değiştirme / Manuel Servo)
+    if (abs(deltaX) < 180) {
+      joyXEngaged = false; // Merkeze döndü, kilit açıldı
     } else if (!joyXEngaged) {
-      if (deltaX < -800) {
+      if (deltaX < -320) {
         joyXEngaged = true;
         handleJoyLeft();
-      } else if (deltaX > 800) {
+      } else if (deltaX > 320) {
         joyXEngaged = true;
         handleJoyRight();
       }
@@ -712,12 +715,15 @@ void handleJoyButtonClick() {
 void handleBackButtonClick() {
   triggerChirp();
 
-  if (editMode) {
-    editMode = false;
-    saveSettings();
-  } else if (activeMenu != MENU_MAIN) {
+  if (activeMenu == MENU_MAIN) {
+    // Ana menüdeyken D18'e basılırsa menüde aşağı ilerle (Yedek gezinme!)
+    handleJoyDown();
+  } else {
+    // Alt sayfadayken D18'e basılırsa ana menüye dön
     activeMenu = MENU_MAIN;
     manualServoMode = false;
+    editMode = false;
+    saveSettings();
   }
 }
 
@@ -1257,10 +1263,6 @@ void setup() {
   stats.motionCount = 0;
   stats.servoSteps = 0;
 
-  ESP32PWM::allocateTimer(0);
-  ESP32PWM::allocateTimer(1);
-  ESP32PWM::allocateTimer(2);
-  ESP32PWM::allocateTimer(3);
   radarServo.setPeriodHertz(50);
   radarServo.attach(SERVO_PIN, 500, 2400);
   servoAngle = 90;
