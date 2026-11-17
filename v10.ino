@@ -219,15 +219,15 @@ bool eyesOpen = true;
 unsigned long lastBlinkTime = 0;
 int robotExpression = 0;
 
-// ==================== YUMUŞAK SESLİ PWM KONTROLÜ ====================
+// ==================== YUMUŞAK VE GÜÇLÜ SES PWM KONTROLÜ ====================
 void setupPWM() {
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcAttach(BUZZER_PIN, 880, 8); // 880 Hz kibar araba park tonu
+  ledcAttach(BUZZER_PIN, 1200, 8); // Park ve acil ikaz frekansı
   ledcWrite(BUZZER_PIN, 0);
   ledcAttach(LED_PIN, PWM_FREQ, PWM_RESOLUTION);
   ledcWrite(LED_PIN, 0);
 #else
-  ledcSetup(BUZZER_CHANNEL, 880, 8);
+  ledcSetup(BUZZER_CHANNEL, 1200, 8);
   ledcAttachPin(BUZZER_PIN, BUZZER_CHANNEL);
   ledcWrite(BUZZER_CHANNEL, 0);
   ledcSetup(LED_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
@@ -236,8 +236,8 @@ void setupPWM() {
 #endif
 }
 
-// Kulak tırmalamayan, kısık sesli kibar park tonu (%12 duty cycle)
-void setSoftBuzzer(bool on) {
+// Güçlü veya kısık ses kontrolü (Aşırı sesli acil alarm veya kademeli tık)
+void setBuzzerAudio(bool on, int volume = 40) {
   if (!settings.soundEnabled || !on) {
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
     ledcWrite(BUZZER_PIN, 0);
@@ -246,12 +246,16 @@ void setSoftBuzzer(bool on) {
 #endif
     return;
   }
-  int softVolume = 30; // Kısık, zarif "tık"
+  volume = constrain(volume, 0, 255);
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcWrite(BUZZER_PIN, softVolume);
+  ledcWrite(BUZZER_PIN, volume);
 #else
-  ledcWrite(BUZZER_CHANNEL, softVolume);
+  ledcWrite(BUZZER_CHANNEL, volume);
 #endif
+}
+
+void setSoftBuzzer(bool on) {
+  setBuzzerAudio(on, 40);
 }
 
 void setWarningLED(int brightness) {
@@ -274,13 +278,13 @@ void triggerChirp() {
 // ==================== KALICI HAFIZA (PREFERENCES) ====================
 void loadSettings() {
   prefs.begin("toprak_v10", false);
-  settings.distanceWarning   = prefs.getInt("d_warn", 35);
-  settings.distanceDanger    = prefs.getInt("d_dang", 15);
+  settings.distanceWarning   = prefs.getInt("d_warn", 50); // 20-50 cm kademeli ikaz
+  settings.distanceDanger    = prefs.getInt("d_dang", 20); // <= 20 cm aşırı sesli
   settings.maxDistance       = prefs.getInt("d_max", 300);
-  settings.gasThreshold      = prefs.getInt("g_thresh", 1300);
+  settings.gasThreshold      = prefs.getInt("g_thresh", 1200);
   settings.soundEnabled      = prefs.getBool("snd_en", true);
   settings.ledEnabled        = prefs.getBool("led_en", true);
-  settings.servoHomePos      = prefs.getInt("srv_home", 66);
+  settings.servoHomePos      = prefs.getInt("srv_home", 90);
   settings.servoInvert       = prefs.getBool("srv_inv", true);
   settings.servoSpeed        = prefs.getInt("srv_spd", 16);
   settings.continuousRadar   = prefs.getBool("rad_cont", true);
@@ -305,13 +309,13 @@ void saveSettings() {
 }
 
 void restoreFactoryDefaults() {
-  settings.distanceWarning   = 35;
-  settings.distanceDanger    = 15;
+  settings.distanceWarning   = 50;
+  settings.distanceDanger    = 20;
   settings.maxDistance       = 300;
-  settings.gasThreshold      = 1300;
+  settings.gasThreshold      = 1200;
   settings.soundEnabled      = true;
   settings.ledEnabled        = true;
-  settings.servoHomePos      = 66;
+  settings.servoHomePos      = 90;
   settings.servoInvert       = true;
   settings.servoSpeed        = 16;
   settings.continuousRadar   = true;
@@ -382,51 +386,66 @@ void readGasSensor() {
   static unsigned long lastGasTime = 0;
   static unsigned long lastBaselineUpdate = 0;
   unsigned long now = millis();
-  if (now - lastGasTime < 80) return;
+  if (now - lastGasTime < 150) return; // 150ms periyot: Seri ve stabil
   lastGasTime = now;
 
-  // 1. Çoklu örneklemeli ADC okuma (Gürültü bastırma)
-  long adcSum = 0;
-  for (int i = 0; i < 6; i++) {
-    adcSum += analogRead(GAS_PIN);
-    delayMicroseconds(50);
+  // 1. ESP32 ADC1 Kanal Geçiş İzolasyonu (Joystick Crosstalk Önleme)
+  // Joystick GPIO 34/35'ten sonra GPIO 36'ya geçerken S&H kapasitörünü deşarj etmek için boş okuma
+  analogRead(GAS_PIN);
+  delayMicroseconds(300);
+
+  // 2. Çoklu örnekleme ve Median / Outlier Filtresi (Uç değerleri ve enterferansı at)
+  int samples[7];
+  for (int i = 0; i < 7; i++) {
+    samples[i] = analogRead(GAS_PIN);
+    delayMicroseconds(150);
   }
-  int currentAdc = adcSum / 6;
+  // Basit bubble sort ile medyan bul
+  for (int i = 0; i < 6; i++) {
+    for (int j = i + 1; j < 7; j++) {
+      if (samples[i] > samples[j]) {
+        int temp = samples[i];
+        samples[i] = samples[j];
+        samples[j] = temp;
+      }
+    }
+  }
+  // Ortadaki 3 değerin ortalaması (gürültü ve joystick sıçramaları %100 filtrelenir)
+  int currentAdc = (samples[2] + samples[3] + samples[4]) / 3;
 
-  // Ağırlıklı hareketli ortalama
-  gasRaw = (gasRaw * 7 + currentAdc * 3) / 10;
+  // 3. Hızlı ve Çevik Filtreleme (Gecikmeyi yok eder, anında tepki verir)
+  gasRaw = (gasRaw * 6 + currentAdc * 4) / 10;
 
-  // 2. Açılışta Isınma ve Temiz Hava Referans Tespiti
+  // 4. Açılışta Isınma ve Temiz Hava Referans Tespiti
   if (!warmupComplete) {
     if (gasBaseline == 0 || gasRaw < gasBaseline) {
       gasBaseline = gasRaw;
     }
-    if (now - bootTime > 10000) {
+    if (now - bootTime > 5000) { // 5 saniye içinde hızlı hazır olma
       warmupComplete = true;
       Serial.printf("MQ-135 Gaz Referansı Kilitlendi: %d ADC\n", gasBaseline);
     }
   } else {
-    // 3. Uzun Vadeli Temiz Hava Drift Takibi (Ortam havası yavaşça kayarsa referansı günceller)
+    // Ortam havası temizlendikçe referansı güncelle
     if (gasRaw < gasBaseline) {
-      gasBaseline = gasRaw; // Daha temiz hava bulundu
-    } else if (now - lastBaselineUpdate > 15000) {
+      gasBaseline = gasRaw;
+    } else if (now - lastBaselineUpdate > 10000) {
       lastBaselineUpdate = now;
-      // Eğer ortam uzun süre sakinse yavaşça adapte ol
-      if (gasDelta < 100) {
+      if (gasDelta < 80) {
         gasBaseline = (gasBaseline * 19 + gasRaw) / 20;
       }
     }
   }
 
-  // 4. Temiz Havadan Sapma (Delta)
+  // 5. Temiz Havadan Sapma (Delta)
   gasDelta = gasRaw - gasBaseline;
   if (gasDelta < 0) gasDelta = 0;
 
-  // 5. Bağıl PPM Hesaplaması (Atmosferik 400 PPM tabanı)
-  float calculatedPPM = 400.0 + (gasDelta * 0.95);
-  gasPPM = (gasPPM * 0.8) + (calculatedPPM * 0.2);
+  // 6. Anında Tepki Veren Doğrusal PPM Hesaplaması (400 PPM taban)
+  float calculatedPPM = 400.0 + (gasDelta * 1.1f);
+  gasPPM = (gasPPM * 0.7f) + (calculatedPPM * 0.3f); // Hızlı ve akıcı PPM takibi
 
-  // 6. 4 Seviyeli Hava Kalitesi Sınıflandırması
+  // 7. Hava Kalitesi Sınıflandırması
   if (gasPPM < 550) {
     gasQualityLevel = 0; // Temiz / Ferah
   } else if (gasPPM < 900) {
@@ -465,57 +484,70 @@ void checkAlertStatus() {
 
   if (!warmupComplete) return;
 
-  // Mesafe Uyarısı (Sadece geçerli 3cm..eşik aralığında çalar)
-  if (distance >= 3.0 && distance <= (float)settings.distanceDanger) {
-    alertLevel = 2; // Yakın engel (<15 cm)
+  // Mesafe Uyarısı:
+  // <= 20 cm: Aşırı sesli acil alarm (alertLevel = 2)
+  // 20 - 50 cm: Kademeli artan park uyarısı (alertLevel = 1)
+  // > 50 cm: Sessiz (alertLevel = 0)
+  if (distance >= 2.0 && distance <= 20.0) {
+    alertLevel = 2; // Acil engel (<20 cm) - AŞIRI SESLİ
     robotExpression = 2;
-  } else if (distance >= 3.0 && distance <= (float)settings.distanceWarning) {
-    alertLevel = 1; // Yaklaşma bölgesi (15 - 35 cm)
+  } else if (distance > 20.0 && distance <= 50.0) {
+    alertLevel = 1; // Yaklaşma bölgesi (20 - 50 cm) - Kademeli Bip
     robotExpression = 1;
   }
 
-  // Gaz Alarmı (Sadece seviye 3'te alarm çalar)
+  // Gaz Alarmı (Seviye 3: Tehlike)
   if (gasQualityLevel >= 3) {
     alertLevel = 2;
     robotExpression = 2;
   }
 }
 
-// ==================== KISIK SESLİ VE KİBAR PARK İKAZI ====================
+// ==================== SESLİ & GÖRSEL İKAZ KONTROLÜ ====================
 void updateAlertActuators() {
   unsigned long now = millis();
 
-  // Mesafe durumuna göre bip periyodu (ms)
   if (alertLevel == 2) {
-    // Yakın engel veya Gaz Alarmı: 150 ms kibar aralık
-    buzzInterval = 150;
+    // <= 20 cm veya Gaz Tehlikesi: AŞIRI SESLİ VE HIZLI ALARM
+    buzzInterval = 70; // 70 ms aralıkla seri acil alarm
   } else if (alertLevel == 1) {
-    // 15 - 35 cm: Mesafeye göre orantılı yumuşak tık (250 ms .. 750 ms)
-    buzzInterval = map((int)distance, settings.distanceDanger, settings.distanceWarning, 250, 750);
-    buzzInterval = constrain(buzzInterval, 250, 750);
+    // 20 - 50 cm arası: Mesafe azaldıkça bip sıklığı kademeli artar
+    // 50 cm'de 700 ms aralık -> 20 cm'e yaklaştıkça 120 ms aralığa iner
+    buzzInterval = map((int)distance, 20, 50, 120, 700);
+    buzzInterval = constrain(buzzInterval, 120, 700);
   } else {
-    buzzInterval = 0; // > 35 cm: TAMAMEN SESSİZ
+    buzzInterval = 0; // > 50 cm: TAMAMEN SESSİZ
   }
 
   if (buzzInterval > 0 && settings.soundEnabled && warmupComplete) {
     if (buzzState == BUZZ_OFF && (now - buzzTimer >= (unsigned long)buzzInterval)) {
-      setSoftBuzzer(true);
+      if (alertLevel == 2) {
+        setBuzzerAudio(true, 240); // Aşırı sesli (tam güç)
+      } else {
+        // 20-50 cm: Mesafe yaklaştıkça hafifçe artan ses (35..75)
+        int vol = map((int)distance, 20, 50, 75, 35);
+        setBuzzerAudio(true, vol);
+      }
       buzzState = BUZZ_ON;
       buzzTimer = now;
-    } else if (buzzState == BUZZ_ON && (now - buzzTimer >= 25)) { // 25 ms çok kısa "tık"
-      setSoftBuzzer(false);
-      buzzState = BUZZ_OFF;
-      buzzTimer = now;
+    } else if (buzzState == BUZZ_ON) {
+      unsigned long onDuration = (alertLevel == 2) ? 60 : 30; // Tehlikede 60ms, yaklaşmada 30ms tık
+      if (now - buzzTimer >= onDuration) {
+        setBuzzerAudio(false);
+        buzzState = BUZZ_OFF;
+        buzzTimer = now;
+      }
     }
   } else {
-    setSoftBuzzer(false);
+    setBuzzerAudio(false);
     buzzState = BUZZ_OFF;
   }
 
   if (alertLevel == 2) {
-    setWarningLED(((now / 90) % 2 == 0) ? 200 : 0);
+    setWarningLED(((now / 80) % 2 == 0) ? 255 : 0); // Seri flaşör
   } else if (alertLevel == 1) {
-    setWarningLED(60);
+    int ledBright = map((int)distance, 20, 50, 200, 40);
+    setWarningLED(ledBright);
   } else {
     setWarningLED(0);
   }
@@ -540,24 +572,24 @@ void updateServoMotor() {
         servoAngle += (settings.servoInvert ? -2 : 2);
       }
 
-      servoAngle = constrain(servoAngle, 10, 170);
+      servoAngle = constrain(servoAngle, 20, 160);
       radarServo.write(servoAngle);
       stats.servoSteps++;
     }
-  } else if (settings.continuousRadar || activeMenu == MENU_RADAR) {
-    // Sürekli Radar Taraması: 1 derece adımlarla sessiz, akıcı süpürme (15° - 165°)
-    if (now - lastServoStep >= (unsigned long)settings.servoSpeed) {
+  } else {
+    // Sürekli Otomatik Sol-Sağ Tarama (20° - 160°) - Her menüde arka planda kesintisiz çalışır!
+    if (now - lastServoStep >= 18) {
       lastServoStep = now;
       if (scanDirection) {
         servoAngle++;
-        if (servoAngle >= 165) {
-          servoAngle = 165;
+        if (servoAngle >= 160) {
+          servoAngle = 160;
           scanDirection = false;
         }
       } else {
         servoAngle--;
-        if (servoAngle <= 15) {
-          servoAngle = 15;
+        if (servoAngle <= 20) {
+          servoAngle = 20;
           scanDirection = true;
         }
       }
@@ -616,33 +648,37 @@ void readInputControls() {
     triggerChirp();
   }
 
-  // Joystick Eksenleri (Edge-Triggered)
-  int rawX = analogRead(JOY_X);
-  int rawY = analogRead(JOY_Y);
-  int deltaY = rawY - joyCenterY;
-  int deltaX = rawX - joyCenterX;
+  // Joystick Eksenleri (Edge-Triggered, 35ms Periyot İle ADC İzolasyonu)
+  static unsigned long lastJoyRead = 0;
+  if (now - lastJoyRead >= 35) {
+    lastJoyRead = now;
+    int rawX = analogRead(JOY_X);
+    int rawY = analogRead(JOY_Y);
+    int deltaY = rawY - joyCenterY;
+    int deltaX = rawX - joyCenterX;
 
-  if (abs(deltaY) < 450) {
-    joyYEngaged = false;
-  } else if (!joyYEngaged) {
-    if (deltaY < -800) {
-      joyYEngaged = true;
-      handleJoyUp();
-    } else if (deltaY > 800) {
-      joyYEngaged = true;
-      handleJoyDown();
+    if (abs(deltaY) < 450) {
+      joyYEngaged = false;
+    } else if (!joyYEngaged) {
+      if (deltaY < -800) {
+        joyYEngaged = true;
+        handleJoyUp();
+      } else if (deltaY > 800) {
+        joyYEngaged = true;
+        handleJoyDown();
+      }
     }
-  }
 
-  if (abs(deltaX) < 450) {
-    joyXEngaged = false;
-  } else if (!joyXEngaged) {
-    if (deltaX < -800) {
-      joyXEngaged = true;
-      handleJoyLeft();
-    } else if (deltaX > 800) {
-      joyXEngaged = true;
-      handleJoyRight();
+    if (abs(deltaX) < 450) {
+      joyXEngaged = false;
+    } else if (!joyXEngaged) {
+      if (deltaX < -800) {
+        joyXEngaged = true;
+        handleJoyLeft();
+      } else if (deltaX > 800) {
+        joyXEngaged = true;
+        handleJoyRight();
+      }
     }
   }
 }
@@ -651,18 +687,17 @@ void handleJoyButtonClick() {
   triggerChirp();
 
   if (activeMenu == MENU_MAIN) {
+    // Ana menüdeyse: Seçili alt menüye gir
     activeMenu = menuSelection + 1;
     if (activeMenu == MENU_SERVO_MANUAL) manualServoMode = true;
     editMode = false;
-  } else if (activeMenu >= MENU_SETTINGS_DIST && activeMenu <= MENU_SETTINGS_SYSTEM) {
-    editMode = !editMode;
-    if (!editMode) {
-      saveSettings();
-      triggerChirp();
-    }
-  } else if (activeMenu == MENU_SERVO_MANUAL) {
-    servoAngle = settings.servoHomePos;
-    radarServo.write(servoAngle);
+  } else {
+    // Herhangi bir alt menüdeyse (Radar, Sensör, Robot, Ayar, Manuel Servo vb.):
+    // Joystick orta tuşuna basınca ANINDA ANA MENÜYE GERİ DÖN!
+    activeMenu = MENU_MAIN;
+    manualServoMode = false;
+    editMode = false;
+    saveSettings();
   }
 }
 
@@ -1215,9 +1250,12 @@ void setup() {
   stats.servoSteps = 0;
 
   ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
   radarServo.setPeriodHertz(50);
   radarServo.attach(SERVO_PIN, 500, 2400);
-  servoAngle = settings.servoHomePos;
+  servoAngle = 90;
   radarServo.write(servoAngle);
 
   for (int i = 0; i <= 180; i++) radarMap[i] = 100;
