@@ -337,10 +337,10 @@ void readDistanceSensor() {
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 22000);
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 16000); // 16ms zaman aşımı (~275 cm menzil): Döngüyü gereksiz bekletmez
 
   float measured = 0;
-  if (duration > 180 && duration < 21000) {
+  if (duration > 180 && duration < 15500) {
     measured = (duration * 0.03432) / 2.0;
   } else {
     measured = (float)settings.maxDistance;
@@ -389,16 +389,18 @@ void readGasSensor() {
   if (now - lastGasTime < 150) return; // 150ms periyot: Seri ve stabil
   lastGasTime = now;
 
-  // 1. ESP32 ADC1 Kanal Geçiş İzolasyonu (Joystick Crosstalk Önleme)
-  // Joystick GPIO 34/35'ten sonra GPIO 36'ya geçerken S&H kapasitörünü deşarj etmek için boş okuma
+  // 1. ESP32 ADC1 Kanal Geçiş İzolasyonu (Joystick Crosstalk ve Ghosting Önleme)
+  // Kanal geçişinde dahili S&H kapasitörünü boşaltmak için çift boş okuma
   analogRead(GAS_PIN);
-  delayMicroseconds(300);
+  delayMicroseconds(50);
+  analogRead(GAS_PIN);
+  delayMicroseconds(100);
 
   // 2. Çoklu örnekleme ve Median / Outlier Filtresi (Uç değerleri ve enterferansı at)
   int samples[7];
   for (int i = 0; i < 7; i++) {
     samples[i] = analogRead(GAS_PIN);
-    delayMicroseconds(150);
+    delayMicroseconds(120);
   }
   // Basit bubble sort ile medyan bul
   for (int i = 0; i < 6; i++) {
@@ -648,12 +650,18 @@ void readInputControls() {
     triggerChirp();
   }
 
-  // Joystick Eksenleri (Edge-Triggered, 35ms Periyot İle ADC İzolasyonu)
+  // Joystick Eksenleri (Edge-Triggered, 35ms Periyot ve Kanal Boşaltma İle ADC İzolasyonu)
   static unsigned long lastJoyRead = 0;
   if (now - lastJoyRead >= 35) {
     lastJoyRead = now;
+    analogRead(JOY_X);
+    delayMicroseconds(30);
     int rawX = analogRead(JOY_X);
+
+    analogRead(JOY_Y);
+    delayMicroseconds(30);
     int rawY = analogRead(JOY_Y);
+
     int deltaY = rawY - joyCenterY;
     int deltaX = rawX - joyCenterX;
 
@@ -1261,6 +1269,7 @@ void setup() {
   for (int i = 0; i <= 180; i++) radarMap[i] = 100;
 
   Wire.begin(OLED_SDA, OLED_SCL);
+  Wire.setClock(400000); // 400kHz Fast I2C modu: OLED aktarımını 12ms'den 2.5ms'ye indirir (sıfır takılma)
   if (display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
