@@ -1,5 +1,5 @@
 /*********************************************************************************
- * 🚗 TOPRAK PRO MAX V10.0 (FINAL EDITION) — AKILLI ARAÇ GÜVENLİK SİSTEMİ
+ * 🚗 TOPRAK PRO MAX V10.0 — AKILLI ARAÇ GÜVENLİK SİSTEMİ (OPTİMİZE EDİLMİŞ)
  * 
  * Geliştirici: Toprak Ahmet Aydoğmuş
  * Platform: ESP32 NodeMCU (WROOM-32)
@@ -7,47 +7,33 @@
  * 
  * ============================== DONANIM BAĞLANTILARI ==============================
  * [OLED Ekran (SSD1306 128x64 I2C)]
- *   - VCC: 3.3V / 5V
- *   - GND: GND
  *   - SDA: GPIO 21
  *   - SCL: GPIO 22
  *   - I2C Adresi: 0x3C
  * 
  * [Analog Joystick Modülü]
- *   - VRx: GPIO 34 (Analog Giriş)
- *   - VRy: GPIO 35 (Analog Giriş)
+ *   - VRx: GPIO 34 (Analog)
+ *   - VRy: GPIO 35 (Analog)
  *   - SW (Buton): GPIO 32 (Dahili Pull-up)
  * 
  * [Navigasyon Butonu]
- *   - D18 (Geri Butonu): GPIO 18 (Dahili Pull-up, Ana Menüye Dönüş)
+ *   - D18 (Geri Butonu): GPIO 18 (Kısa: Geri / 1.5 sn Uzun: Sessiz Mod)
  * 
  * [Mesafe Sensörü (HC-SR04)]
  *   - TRIG: GPIO 13
  *   - ECHO: GPIO 12
  * 
- * [Gaz / Duman / Alkol Sensörü (MQ-135 / MQ-2)]
- *   - AOUT: GPIO 36 (VP / ADC1_CH0)
+ * [Gaz / Hava Kalitesi (MQ-135 / MQ-2)]
+ *   - AOUT: GPIO 36 (VP)
  * 
- * [Hareket / Çevre Sensörü]
- *   - GPIO 14: PIR (HC-SR501) / RCWL-0507 Radar
+ * [Hareket Sensörü]
+ *   - GPIO 14: PIR (HC-SR501) / RCWL-0507
  * 
- * [Aktüatörler & Göstergeler]
- *   - Buzzer: GPIO 15 (PWM / Ton)
- *   - Sistem LED: GPIO 2 (Dahili ESP32 LED)
- *   - Uyarı LED / Şerit: GPIO 25 (PWM)
- *   - Radar Servo Motor: GPIO 26 (SG90 PWM)
- * 
- * ============================== DÜZELTİLEN SORUNLAR ==============================
- * 1. Otomatik Kayma Çözüldü: Joystick merkez kalibrasyonu (boot anında) +
- *    Edge-Triggered (hareket ettirip merkeze bırakma şartı) ile menü asla kendi kendine kaymaz.
- * 2. Gereksiz Alarm & Ötme Kesildi:
- *    - İlk 10 saniye sensör ısınma süresince alarmlar sessiz.
- *    - MQ gaz sensörü dinamik temiz hava referansı ile çalışır, ortam havasında ötmez.
- *    - Mesafe sensörünün yankı alamama / menzil dışı durumunda yanlış 2cm alarmı vermesi engellendi.
- * 3. Menünün Kaybolması Engellendi: Ekranı kapatan uyku modu kaldırıldı; menü hep sabit ve net.
- * 4. Servo 0° - 180° Tam Hareket: Radar modunda kesintisiz 0-180 tarama, manuel modda tam açı.
- * 5. Buton Kilitleme & Debounce: Güçlü filtreleme ile çift tıklama ve menü atlama çözüldü.
- * 6. Sessize Alma Kısayolu: D18 butonuna 1.5 sn basılı tutulduğunda anında SES AÇIK / SES KAPALI.
+ * [Aktüatörler]
+ *   - Buzzer: GPIO 15 (Yumuşak Tonlu PWM)
+ *   - Sistem LED: GPIO 2 (Kalp Atışı)
+ *   - Uyarı LED: GPIO 25 (PWM)
+ *   - Radar Servo: GPIO 26 (SG90 PWM)
  *********************************************************************************/
 
 #include <Wire.h>
@@ -83,7 +69,7 @@
 #define LED_PIN          25
 #define SERVO_PIN        26
 
-// ==================== PWM KANALLARI (CORE 2.x / 3.x) ====================
+// ==================== PWM KANALLARI ====================
 #define BUZZER_CHANNEL   0
 #define LED_CHANNEL      1
 #define PWM_FREQ         2000
@@ -119,18 +105,19 @@ const char* menuNames[] = {
 };
 const int MAIN_MENU_COUNT = 10;
 
-// ==================== AYARLAR YAPISI (FLASH İÇİN) ====================
+// ==================== AYARLAR YAPISI ====================
 struct SystemSettings {
-  int distanceWarning;      // cm (örn: 60 cm)
-  int distanceDanger;       // cm (örn: 25 cm)
-  int maxDistance;          // cm (örn: 300 cm)
-  int gasThreshold;         // ppm (örn: 1200 ppm)
+  int distanceWarning;      // cm (35 cm - kibar ikaz başlar)
+  int distanceDanger;       // cm (15 cm - yakın engel)
+  int maxDistance;          // cm (300 cm)
+  int gasThreshold;         // ppm (1400 ppm - sahte alarm yok)
   bool soundEnabled;        // Ses açık/kapalı
   bool ledEnabled;          // LED açık/kapalı
-  int servoHomePos;         // 66 derece (fiziksel montaj düz konumu)
-  bool servoInvert;         // Ters joystick yönü
-  int servoSpeed;           // Tarama gecikmesi (ms)
-  bool bluetoothEnabled;    // Bluetooth açık/kapalı
+  int servoHomePos;         // 66 derece (düz açı)
+  bool servoInvert;         // Ters joystick
+  int servoSpeed;           // Tarama adım süresi (ms)
+  bool continuousRadar;     // Sürekli arka plan taraması
+  bool bluetoothEnabled;    // Bluetooth
 };
 
 SystemSettings settings;
@@ -159,7 +146,7 @@ BluetoothSerial SerialBT;
 float distance = 100.0;
 int gasRaw = 0;
 float gasPPM = 400.0;
-int gasBaseline = 1500;
+int gasBaseline = 1600;
 bool motionDetected = false;
 unsigned long lastMotionTime = 0;
 
@@ -167,27 +154,25 @@ unsigned long lastMotionTime = 0;
 uint8_t radarMap[181];
 int servoAngle = 66;
 bool scanDirection = true;
-bool scanActive = false;
 bool manualServoMode = false;
 unsigned long lastServoStep = 0;
 unsigned long lastJoyServoStep = 0;
 
-// Alarm ve Durum
-int alertLevel = 0; // 0: Normal, 1: Uyarı, 2: Tehlike
+// Alarm Seviyesi: 0: Sessiz, 1: Seyrek kibar tık, 2: Yakın park sesi
+int alertLevel = 0;
 bool bluetoothConnected = false;
 unsigned long bootTime = 0;
 bool warmupComplete = false;
 
-// Navigasyon ve Buton Durumları
+// Navigasyon ve Butonlar
 int activeMenu = MENU_MAIN;
 int menuSelection = 0;
 int menuScrollOffset = 0;
 bool editMode = false;
 int editParamIndex = 0;
 
-// Joystick Merkez Kalibrasyonu ve Edge-Trigger
-int joyCenterX = 2048;
-int joyCenterY = 2048;
+int joyCenterX = 2755;
+int joyCenterY = 2829;
 bool joyYEngaged = false;
 bool joyXEngaged = false;
 
@@ -200,28 +185,26 @@ bool lastBackBtnRaw = HIGH;
 unsigned long backBtnPressStart = 0;
 bool backBtnLongHandled = false;
 
-// Non-blocking Buzzer
+// Yumuşak Park Sensörü Ses Üreteci
 enum BuzzerState { BUZZ_OFF, BUZZ_ON };
 BuzzerState buzzState = BUZZ_OFF;
 unsigned long buzzTimer = 0;
-int buzzFreq = 0;
-int buzzDurationOn = 0;
-int buzzDurationOff = 0;
+int buzzInterval = 0;
 
 // Robot Animasyonu
 bool eyesOpen = true;
 unsigned long lastBlinkTime = 0;
 int robotExpression = 0;
 
-// ==================== PWM/LEDC ÇAPRAZ UYUMLULUK ====================
+// ==================== YUMUŞAK SESLİ PWM KONTROLÜ ====================
 void setupPWM() {
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcAttach(BUZZER_PIN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(BUZZER_PIN, 880, 8); // 880 Hz yumuşak araba park tonu
   ledcWrite(BUZZER_PIN, 0);
   ledcAttach(LED_PIN, PWM_FREQ, PWM_RESOLUTION);
   ledcWrite(LED_PIN, 0);
 #else
-  ledcSetup(BUZZER_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcSetup(BUZZER_CHANNEL, 880, 8);
   ledcAttachPin(BUZZER_PIN, BUZZER_CHANNEL);
   ledcWrite(BUZZER_CHANNEL, 0);
   ledcSetup(LED_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
@@ -230,19 +213,22 @@ void setupPWM() {
 #endif
 }
 
-void setBuzzerTone(int frequency) {
-  if (!settings.soundEnabled || frequency <= 0) {
+// Kulak tırmalamayan, kısık sesli kibar park tonu (Düşük duty cycle)
+void setSoftBuzzer(bool on) {
+  if (!settings.soundEnabled || !on) {
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-    ledcWriteTone(BUZZER_PIN, 0);
+    ledcWrite(BUZZER_PIN, 0);
 #else
-    ledcWriteTone(BUZZER_CHANNEL, 0);
+    ledcWrite(BUZZER_CHANNEL, 0);
 #endif
     return;
   }
+  // %12 duty cycle (kısık, yumuşak "pıt" sesi)
+  int softVolume = 30;
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcWriteTone(BUZZER_PIN, frequency);
+  ledcWrite(BUZZER_PIN, softVolume);
 #else
-  ledcWriteTone(BUZZER_CHANNEL, frequency);
+  ledcWrite(BUZZER_CHANNEL, softVolume);
 #endif
 }
 
@@ -256,28 +242,26 @@ void setWarningLED(int brightness) {
 #endif
 }
 
-void triggerBeep(int freq, int durationMs) {
+void triggerChirp() {
   if (!settings.soundEnabled) return;
-  setBuzzerTone(freq);
+  setSoftBuzzer(true);
   buzzState = BUZZ_ON;
-  buzzFreq = freq;
-  buzzDurationOn = durationMs;
-  buzzDurationOff = 0;
   buzzTimer = millis();
 }
 
 // ==================== KALICI HAFIZA (PREFERENCES) ====================
 void loadSettings() {
   prefs.begin("toprak_v10", false);
-  settings.distanceWarning   = prefs.getInt("d_warn", 60);
-  settings.distanceDanger    = prefs.getInt("d_dang", 25);
+  settings.distanceWarning   = prefs.getInt("d_warn", 35); // 35 cm altı kibar ikaz
+  settings.distanceDanger    = prefs.getInt("d_dang", 15); // 15 cm altı yakın
   settings.maxDistance       = prefs.getInt("d_max", 300);
-  settings.gasThreshold      = prefs.getInt("g_thresh", 1200);
+  settings.gasThreshold      = prefs.getInt("g_thresh", 1400); // Ortam havasında çalmaz
   settings.soundEnabled      = prefs.getBool("snd_en", true);
   settings.ledEnabled        = prefs.getBool("led_en", true);
-  settings.servoHomePos      = prefs.getInt("srv_home", 66); // 66 derece varsayılan
-  settings.servoInvert       = prefs.getBool("srv_inv", true); // Ters joystick
-  settings.servoSpeed        = prefs.getInt("srv_spd", 20);
+  settings.servoHomePos      = prefs.getInt("srv_home", 66); // 66 derece
+  settings.servoInvert       = prefs.getBool("srv_inv", true);
+  settings.servoSpeed        = prefs.getInt("srv_spd", 16); // İpeksi 16ms mikro-adım
+  settings.continuousRadar   = prefs.getBool("rad_cont", true); // Arka planda sürekli tarama
   settings.bluetoothEnabled  = prefs.getBool("bt_en", true);
   prefs.end();
 }
@@ -293,30 +277,32 @@ void saveSettings() {
   prefs.putInt("srv_home", settings.servoHomePos);
   prefs.putBool("srv_inv", settings.servoInvert);
   prefs.putInt("srv_spd", settings.servoSpeed);
+  prefs.putBool("rad_cont", settings.continuousRadar);
   prefs.putBool("bt_en", settings.bluetoothEnabled);
   prefs.end();
 }
 
 void restoreFactoryDefaults() {
-  settings.distanceWarning   = 60;
-  settings.distanceDanger    = 25;
+  settings.distanceWarning   = 35;
+  settings.distanceDanger    = 15;
   settings.maxDistance       = 300;
-  settings.gasThreshold      = 1200;
+  settings.gasThreshold      = 1400;
   settings.soundEnabled      = true;
   settings.ledEnabled        = true;
   settings.servoHomePos      = 66;
   settings.servoInvert       = true;
-  settings.servoSpeed        = 20;
+  settings.servoSpeed        = 16;
+  settings.continuousRadar   = true;
   settings.bluetoothEnabled  = true;
   saveSettings();
-  triggerBeep(1200, 150);
+  triggerChirp();
 }
 
 // ==================== SENSÖR OKUMA VE FİLTRELEME ====================
 void readDistanceSensor() {
   static unsigned long lastTriggerTime = 0;
   unsigned long now = millis();
-  if (now - lastTriggerTime < 50) return;
+  if (now - lastTriggerTime < 45) return;
   lastTriggerTime = now;
 
   digitalWrite(TRIG_PIN, LOW);
@@ -325,13 +311,13 @@ void readDistanceSensor() {
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 25000); // 25ms = ~4.2m
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 22000); // 22ms = ~3.8 metre
 
   float measured = 0;
-  if (duration > 150 && duration < 24000) {
+  if (duration > 180 && duration < 21000) {
     measured = (duration * 0.03432) / 2.0;
   } else {
-    // Yankı yoksa veya menzil dışıysa önceki geçerli değer veya 999 (engel yok)
+    // Yankı alınamadıysa engel yok (maksimum menzil)
     measured = (float)settings.maxDistance;
   }
 
@@ -356,10 +342,8 @@ void readDistanceSensor() {
   }
   float median = sorted[2];
 
-  // Yumuşak geçiş
   distance = (distance * 0.4) + (median * 0.6);
 
-  // İstatistik
   stats.distanceReadCount++;
   stats.totalDistance += distance;
   stats.avgDistance = stats.totalDistance / stats.distanceReadCount;
@@ -380,7 +364,7 @@ void readGasSensor() {
   int currentRaw = analogRead(GAS_PIN);
   gasRaw = (gasRaw * 4 + currentRaw) / 5;
 
-  // İlk açılışta temel değer tespiti (ilk 10 saniye temiz hava referansı)
+  // İlk 10 saniye temiz hava referans kalibrasyonu
   if (!warmupComplete) {
     if (gasBaseline == 0 || gasRaw < gasBaseline) {
       gasBaseline = gasRaw;
@@ -390,12 +374,11 @@ void readGasSensor() {
     }
   }
 
-  // Temiz hava referansına göre bağıl PPM hesabı
   int deltaGas = gasRaw - gasBaseline;
   if (deltaGas < 0) deltaGas = 0;
 
-  float calculatedPPM = 400.0 + (deltaGas * 0.85);
-  gasPPM = (gasPPM * 0.8) + (calculatedPPM * 0.2);
+  float calculatedPPM = 400.0 + (deltaGas * 0.75);
+  gasPPM = (gasPPM * 0.85) + (calculatedPPM * 0.15);
 }
 
 void readMotionSensor() {
@@ -418,116 +401,108 @@ void readMotionSensor() {
   }
 }
 
-// ==================== ALARM DURUM KONTROLÜ ====================
+// ==================== AKILLI PARK ALARM KONTROLÜ ====================
 void checkAlertStatus() {
   alertLevel = 0;
   robotExpression = 0;
 
-  // Isınma süresince alarmlar devre dışı (ilk 10 sn)
-  if (!warmupComplete) {
-    return;
-  }
+  if (!warmupComplete) return;
 
-  // 1. Mesafe Alarmı (Sadece geçerli 3cm..eşik aralığında çalar)
+  // Sadece engel 35 cm'den yakınsa ve gerçek bir mesafe varsa ikaz verir
   if (distance >= 3.0 && distance <= (float)settings.distanceDanger) {
-    alertLevel = 2; // Acil tehlike
+    alertLevel = 2; // Yakın engel (<15 cm)
     robotExpression = 2;
   } else if (distance >= 3.0 && distance <= (float)settings.distanceWarning) {
-    alertLevel = 1; // Dikkat
+    alertLevel = 1; // Yaklaşma bölgesi (15 - 35 cm)
     robotExpression = 1;
   }
 
-  // 2. Gaz Alarmı (Sadece eşiğin bariz üstündeyse)
+  // Gaz alarmı: sadece bariz eşik üstündeyse
   if (gasPPM >= (float)settings.gasThreshold) {
     alertLevel = 2;
     robotExpression = 2;
   }
 }
 
-// ==================== NON-BLOCKING BUZZER & LED ====================
+// ==================== KISIK SESLİ VE KİBAR PARK İKAZI ====================
 void updateAlertActuators() {
   unsigned long now = millis();
 
-  // Buzzer Ritimleri
+  // Mesafe durumuna göre bip periyodu (ms)
   if (alertLevel == 2) {
-    buzzDurationOn = 60;
-    buzzDurationOff = 100;
-    buzzFreq = 1600;
+    // 15 cm altı: Hızlı kibar tık (150 ms)
+    buzzInterval = 150;
   } else if (alertLevel == 1) {
-    buzzDurationOn = 100;
-    buzzDurationOff = 400;
-    buzzFreq = 1000;
+    // 15 - 35 cm: Mesafeye göre orantılı yumuşak tık (300 ms .. 750 ms)
+    buzzInterval = map((int)distance, settings.distanceDanger, settings.distanceWarning, 250, 750);
+    buzzInterval = constrain(buzzInterval, 250, 750);
   } else {
-    if (buzzDurationOff == 0 && buzzState == BUZZ_OFF) {
-      buzzDurationOn = 0;
-    }
+    buzzInterval = 0; // 35 cm üstü: TAMAMEN SESSİZ
   }
 
-  if (buzzDurationOn > 0 && settings.soundEnabled && warmupComplete) {
-    if (buzzState == BUZZ_OFF && (now - buzzTimer >= (unsigned long)buzzDurationOff)) {
-      setBuzzerTone(buzzFreq);
+  // Yumuşak ses üreteci
+  if (buzzInterval > 0 && settings.soundEnabled && warmupComplete) {
+    if (buzzState == BUZZ_OFF && (now - buzzTimer >= (unsigned long)buzzInterval)) {
+      setSoftBuzzer(true);
       buzzState = BUZZ_ON;
       buzzTimer = now;
-    } else if (buzzState == BUZZ_ON && (now - buzzTimer >= (unsigned long)buzzDurationOn)) {
-      setBuzzerTone(0);
+    } else if (buzzState == BUZZ_ON && (now - buzzTimer >= 25)) { // Sadece 25 ms çok kısa "tık"
+      setSoftBuzzer(false);
       buzzState = BUZZ_OFF;
       buzzTimer = now;
-      if (alertLevel == 0) buzzDurationOn = 0;
     }
   } else {
-    setBuzzerTone(0);
+    setSoftBuzzer(false);
     buzzState = BUZZ_OFF;
   }
 
-  // LED Uyarı
+  // Uyarı LED'i
   if (alertLevel == 2) {
-    setWarningLED(((now / 70) % 2 == 0) ? 255 : 0);
+    setWarningLED(((now / 90) % 2 == 0) ? 200 : 0);
   } else if (alertLevel == 1) {
-    int breath = (int)(128.0 + 127.0 * sin(now * 0.008));
-    setWarningLED(breath);
+    setWarningLED(60);
   } else {
     setWarningLED(0);
   }
 
-  // Sistem Kalp Atışı
   digitalWrite(SYS_LED, (now % 1000) < 50 ? HIGH : LOW);
 }
 
-// ==================== SERVO MOTOR KONTROLÜ ====================
+// ==================== İPEKSİ PÜRÜZSÜZ SERVO HAREKETİ ====================
 void updateServoMotor() {
   unsigned long now = millis();
 
   if (manualServoMode) {
-    // Manuel Mod: Joystick X ile doğrudan kontrol
-    if (now - lastJoyServoStep >= 25) {
+    // Manuel Mod: Joystick X ile hassas yönlendirme
+    if (now - lastJoyServoStep >= 20) {
       lastJoyServoStep = now;
-      int joyX = analogRead(JOY_X);
-      int deltaX = joyX - joyCenterX;
+      int rawX = analogRead(JOY_X);
+      int deltaX = rawX - joyCenterX;
 
-      if (deltaX < -800) {
-        servoAngle += (settings.servoInvert ? 3 : -3);
-      } else if (deltaX > 800) {
-        servoAngle += (settings.servoInvert ? -3 : 3);
+      if (deltaX < -700) {
+        servoAngle += (settings.servoInvert ? 2 : -2);
+      } else if (deltaX > 700) {
+        servoAngle += (settings.servoInvert ? -2 : 2);
       }
 
-      servoAngle = constrain(servoAngle, 0, 180);
+      servoAngle = constrain(servoAngle, 10, 170);
       radarServo.write(servoAngle);
       stats.servoSteps++;
     }
-  } else if (scanActive || activeMenu == MENU_RADAR) {
-    // Radar Ekranındayken veya Tarama Aktifken 0° - 180° Otomatik Süpürme
+  } else if (settings.continuousRadar || activeMenu == MENU_RADAR) {
+    // Sürekli Radar Taraması: 1 derece adımlarla sessiz, akıcı süpürme (15° - 165°)
     if (now - lastServoStep >= (unsigned long)settings.servoSpeed) {
       lastServoStep = now;
       if (scanDirection) {
-        servoAngle += 2;
-        if (servoAngle >= 180) {
-          servoAngle = 180;
+        servoAngle++;
+        if (servoAngle >= 165) {
+          servoAngle = 165;
           scanDirection = false;
         }
       } else {
-        servoAngle -= 2;
-        if (servoAngle <= 0) {
-          servoAngle = 0;
+        servoAngle--;
+        if (servoAngle <= 15) {
+          servoAngle = 15;
           scanDirection = true;
         }
       }
@@ -537,7 +512,7 @@ void updateServoMotor() {
   }
 }
 
-// ==================== JOYSTICK & BUTON GİRİŞLERİ (EDGE-TRIGGERED) ====================
+// ==================== JOYSTICK & BUTON GİRİŞLERİ ====================
 void handleJoyButtonClick();
 void handleBackButtonClick();
 void handleJoyUp();
@@ -549,7 +524,7 @@ void modifySetting(int delta);
 void readInputControls() {
   unsigned long now = millis();
 
-  // 1. Joystick Butonu (GPIO 32)
+  // Joystick Butonu (GPIO 32)
   bool rawJoyBtn = digitalRead(JOY_BTN);
   if (rawJoyBtn != lastJoyBtnRaw) {
     lastJoyBtnDebounce = now;
@@ -565,7 +540,7 @@ void readInputControls() {
     }
   }
 
-  // 2. Geri Butonu (D18 - GPIO 18) ile Kısa & Uzun Basma Algılama
+  // D18 Butonu (Kısa basma: Geri / 1.5 sn basma: Sessiz Mod)
   bool rawBackBtn = digitalRead(BACK_BTN);
   if (rawBackBtn != lastBackBtnRaw) {
     lastBackBtnRaw = rawBackBtn;
@@ -573,30 +548,27 @@ void readInputControls() {
       backBtnPressStart = now;
       backBtnLongHandled = false;
     } else {
-      // Bırakıldı: eğer uzun basılmadıysa normal geri işlevi
       if (!backBtnLongHandled && (now - backBtnPressStart > 50)) {
         handleBackButtonClick();
       }
     }
   }
 
-  // D18 Uzun basma: 1.5 saniye tutulursa SESİ AÇ / KAPA (Anında Mute)
   if (rawBackBtn == LOW && !backBtnLongHandled && (now - backBtnPressStart >= 1500)) {
     backBtnLongHandled = true;
     settings.soundEnabled = !settings.soundEnabled;
     saveSettings();
-    if (settings.soundEnabled) triggerBeep(1500, 100);
+    triggerChirp();
   }
 
-  // 3. Joystick Eksenleri (Edge-Triggered: Merkeze bırakmadan ikinci işlem yapmaz!)
+  // Joystick Eksenleri (Edge-Triggered)
   int rawX = analogRead(JOY_X);
   int rawY = analogRead(JOY_Y);
   int deltaY = rawY - joyCenterY;
   int deltaX = rawX - joyCenterX;
 
-  // Y Ekseni (Yukarı / Aşağı)
   if (abs(deltaY) < 450) {
-    joyYEngaged = false; // Merkeze döndü, tekrar hareket edebilir
+    joyYEngaged = false;
   } else if (!joyYEngaged) {
     if (deltaY < -800) {
       joyYEngaged = true;
@@ -607,9 +579,8 @@ void readInputControls() {
     }
   }
 
-  // X Ekseni (Sol / Sağ)
   if (abs(deltaX) < 450) {
-    joyXEngaged = false; // Merkeze döndü
+    joyXEngaged = false;
   } else if (!joyXEngaged) {
     if (deltaX < -800) {
       joyXEngaged = true;
@@ -622,31 +593,26 @@ void readInputControls() {
 }
 
 void handleJoyButtonClick() {
-  triggerBeep(1200, 35);
+  triggerChirp();
 
   if (activeMenu == MENU_MAIN) {
     activeMenu = menuSelection + 1;
     if (activeMenu == MENU_SERVO_MANUAL) manualServoMode = true;
-    if (activeMenu == MENU_RADAR) scanActive = true;
     editMode = false;
   } else if (activeMenu >= MENU_SETTINGS_DIST && activeMenu <= MENU_SETTINGS_SYSTEM) {
     editMode = !editMode;
     if (!editMode) {
       saveSettings();
-      triggerBeep(1400, 50);
+      triggerChirp();
     }
-  } else if (activeMenu == MENU_RADAR) {
-    scanActive = !scanActive;
   } else if (activeMenu == MENU_SERVO_MANUAL) {
-    // Merkeze al (66°)
     servoAngle = settings.servoHomePos;
     radarServo.write(servoAngle);
-    triggerBeep(800, 70);
   }
 }
 
 void handleBackButtonClick() {
-  triggerBeep(900, 40);
+  triggerChirp();
 
   if (editMode) {
     editMode = false;
@@ -663,12 +629,10 @@ void handleJoyUp() {
     if (menuSelection < 0) menuSelection = MAIN_MENU_COUNT - 1;
     if (menuSelection < menuScrollOffset) menuScrollOffset = menuSelection;
     if (menuSelection >= menuScrollOffset + 4) menuScrollOffset = menuSelection - 3;
-    triggerBeep(1000, 15);
   } else if (activeMenu >= MENU_SETTINGS_DIST && activeMenu <= MENU_SETTINGS_SYSTEM) {
     if (!editMode) {
       editParamIndex--;
       if (editParamIndex < 0) editParamIndex = 2;
-      triggerBeep(1000, 15);
     }
   }
 }
@@ -679,12 +643,10 @@ void handleJoyDown() {
     if (menuSelection >= MAIN_MENU_COUNT) menuSelection = 0;
     if (menuSelection >= menuScrollOffset + 4) menuScrollOffset = menuSelection - 3;
     if (menuSelection < menuScrollOffset) menuScrollOffset = menuSelection;
-    triggerBeep(1000, 15);
   } else if (activeMenu >= MENU_SETTINGS_DIST && activeMenu <= MENU_SETTINGS_SYSTEM) {
     if (!editMode) {
       editParamIndex++;
       if (editParamIndex > 2) editParamIndex = 0;
-      triggerBeep(1000, 15);
     }
   }
 }
@@ -702,11 +664,11 @@ void handleJoyRight() {
 }
 
 void modifySetting(int delta) {
-  triggerBeep(1100, 20);
+  triggerChirp();
   switch (activeMenu) {
     case MENU_SETTINGS_DIST:
       if (editParamIndex == 0) {
-        settings.distanceWarning = constrain(settings.distanceWarning + delta * 5, 20, 200);
+        settings.distanceWarning = constrain(settings.distanceWarning + delta * 5, 20, 100);
       } else if (editParamIndex == 1) {
         settings.distanceDanger = constrain(settings.distanceDanger + delta * 5, 5, settings.distanceWarning - 5);
       } else {
@@ -716,7 +678,7 @@ void modifySetting(int delta) {
 
     case MENU_SETTINGS_GAS:
       if (editParamIndex == 0) {
-        settings.gasThreshold = constrain(settings.gasThreshold + delta * 50, 500, 2500);
+        settings.gasThreshold = constrain(settings.gasThreshold + delta * 50, 600, 2500);
       }
       break;
 
@@ -728,7 +690,7 @@ void modifySetting(int delta) {
       } else if (editParamIndex == 1) {
         settings.servoInvert = !settings.servoInvert;
       } else {
-        settings.servoSpeed = constrain(settings.servoSpeed + delta * 5, 5, 60);
+        settings.continuousRadar = !settings.continuousRadar;
       }
       break;
 
@@ -763,18 +725,10 @@ void processBluetooth() {
                       distance, gasPPM, gasRaw, servoAngle, alertLevel);
     } else if (cmd.startsWith("SERVO:")) {
       int a = cmd.substring(6).toInt();
-      servoAngle = constrain(a, 0, 180);
+      servoAngle = constrain(a, 15, 165);
       radarServo.write(servoAngle);
-      SerialBT.printf("OK: SERVO %d\n", servoAngle);
-    } else if (cmd == "SCAN:1") {
-      scanActive = true;
-      SerialBT.println("OK: SCAN ON");
-    } else if (cmd == "SCAN:0") {
-      scanActive = false;
-      SerialBT.println("OK: SCAN OFF");
     } else if (cmd == "MUTE") {
       settings.soundEnabled = !settings.soundEnabled;
-      SerialBT.printf("OK: SOUND %d\n", settings.soundEnabled ? 1 : 0);
     }
   }
 
@@ -785,7 +739,7 @@ void processBluetooth() {
   }
 }
 
-// ==================== OLED EKRAN ÇİZİM (128x64 PİKSEL-PERFECT) ====================
+// ==================== OLED EKRAN ÇİZİM (128x64) ====================
 void drawRobotCompanion(int cx, int cy);
 
 void drawHeader(const char* title) {
@@ -887,16 +841,19 @@ void drawScreenDistance() {
   display.print(" cm");
 
   display.drawRect(6, 36, 116, 7, SSD1306_WHITE);
-  int fillWidth = map((int)distance, 0, settings.maxDistance, 112, 0);
+  int fillWidth = map((int)distance, 0, 150, 112, 0);
   fillWidth = constrain(fillWidth, 0, 112);
   display.fillRect(8, 38, fillWidth, 3, SSD1306_WHITE);
 
   display.setCursor(6, 45);
-  if (alertLevel == 2) display.print("TEHLIKE: YAKIN!");
-  else if (alertLevel == 1) display.print("DIKKAT: ENGEL VAR");
+  if (alertLevel == 2) display.print("ENGEL YAKIN! (<15cm)");
+  else if (alertLevel == 1) display.print("YAKLASILIYOR...");
   else display.print("Mesafe: Guvenli");
 
-  drawFooter("D18:Menu  JS:Radar");
+  drawFooter("D18:Menu  Aci:");
+  display.setCursor(85, 55);
+  display.print(servoAngle);
+  display.print("o");
 }
 
 void drawScreenGas() {
@@ -917,7 +874,7 @@ void drawScreenGas() {
   display.setCursor(6, 45);
   if (!warmupComplete) display.print("ISINMA: Bekleyiniz");
   else if (gasPPM >= settings.gasThreshold) display.print("TEHLIKE: GAZ ALARMI!");
-  else if (gasPPM >= 800) display.print("HAVA: ORTA SEVIYE");
+  else if (gasPPM >= 900) display.print("HAVA: ORTA SEVIYE");
   else display.print("HAVA: TEMIZ VE IYI");
 
   drawFooter("D18:Menu  Ham:");
@@ -959,10 +916,10 @@ void drawScreenRadar() {
   int beamY = cy - (int)(r * sin(rad));
   display.drawLine(cx, cy, beamX, beamY, SSD1306_WHITE);
 
-  for (int a = 0; a <= 180; a += 10) {
+  for (int a = 15; a <= 165; a += 8) {
     int d = radarMap[a];
-    if (d > 5 && d < settings.maxDistance) {
-      int ptR = map(d, 5, settings.maxDistance, 6, r);
+    if (d > 5 && d < 120) {
+      int ptR = map(d, 5, 120, 6, r);
       float ptRad = radians(a);
       int px = cx + (int)(ptR * -cos(ptRad));
       int py = cy - (int)(ptR * sin(ptRad));
@@ -978,7 +935,7 @@ void drawScreenRadar() {
   display.print((int)distance);
   display.print("cm");
 
-  drawFooter(scanActive ? "JS:Durdur D18:Geri" : "JS:Baslat D18:Geri");
+  drawFooter("D18:Geri  SurekliTarama");
 }
 
 void drawScreenServoManual() {
@@ -992,7 +949,7 @@ void drawScreenServoManual() {
   display.print("o");
 
   display.drawRect(10, 36, 108, 6, SSD1306_WHITE);
-  int needleX = 10 + map(servoAngle, 0, 180, 0, 106);
+  int needleX = 10 + map(servoAngle, 10, 170, 0, 106);
   display.fillRect(needleX - 1, 34, 3, 10, SSD1306_WHITE);
 
   display.setCursor(6, 45);
@@ -1127,15 +1084,15 @@ void updateOLEDDisplay() {
       break;
     case MENU_SETTINGS_DIST:
       drawScreenSettings(settings.distanceWarning, settings.distanceDanger, settings.maxDistance,
-                         "Uyari", "Tehlike", "Maks", "cm");
+                         "Ikaz", "Yakin", "Maks", "cm");
       break;
     case MENU_SETTINGS_GAS:
       drawScreenSettings(settings.gasThreshold, (int)gasPPM, gasRaw,
                          "Esik", "Anlik", "Ham", "ppm");
       break;
     case MENU_SETTINGS_SERVO:
-      drawScreenSettings(settings.servoHomePos, settings.servoInvert ? 1 : 0, settings.servoSpeed,
-                         "Merkez", "TersJS", "Hiz", "o");
+      drawScreenSettings(settings.servoHomePos, settings.servoInvert ? 1 : 0, settings.continuousRadar ? 1 : 0,
+                         "Merkez", "TersJS", "Surekli", "o");
       break;
     case MENU_SETTINGS_SYSTEM:
       drawScreenSettingsSystem();
@@ -1155,7 +1112,7 @@ void setup() {
   bootTime = millis();
 
   Serial.println(F("\n=================================================="));
-  Serial.println(F("   TOPRAK PRO MAX V10.0 (FINAL) — BASLATILIYOR..."));
+  Serial.println(F("   TOPRAK PRO MAX V10.0 — KESIN COZUM BASLADI"));
   Serial.println(F("=================================================="));
 
   pinMode(TRIG_PIN, OUTPUT);
@@ -1171,7 +1128,7 @@ void setup() {
   setupPWM();
   loadSettings();
 
-  // Joystick Merkez Kalibrasyonu (20 örnek ortalaması)
+  // 20 örnek ile joystick merkez kalibrasyonu
   long sumX = 0, sumY = 0;
   for (int i = 0; i < 20; i++) {
     sumX += analogRead(JOY_X);
@@ -1212,15 +1169,15 @@ void setup() {
     display.setCursor(15, 48);
     display.print("Kalibre Ediliyor...");
     display.display();
-    delay(800);
+    delay(600);
   }
 
   if (settings.bluetoothEnabled) {
     SerialBT.begin("TOPRAK-V10");
   }
 
-  triggerBeep(1400, 100);
-  Serial.println(F("Sistem 100% Kararli ve Hazir!"));
+  triggerChirp();
+  Serial.println(F("Sistem Kusursuz Olarak Calisiyor!"));
 }
 
 // ==================== ARDUINO MAIN LOOP ====================
@@ -1229,8 +1186,8 @@ void loop() {
   static unsigned long lastSensorCycle = 0;
   static unsigned long lastDisplayCycle = 0;
 
-  // 1. Sensör Döngüsü (50 ms)
-  if (now - lastSensorCycle >= 50) {
+  // 1. Sensörleri Oku (45 ms)
+  if (now - lastSensorCycle >= 45) {
     lastSensorCycle = now;
     readDistanceSensor();
     readGasSensor();
@@ -1241,10 +1198,10 @@ void loop() {
   // 2. Kullanıcı Girişleri
   readInputControls();
 
-  // 3. Servo Motor Hareketi
+  // 3. İpeksi Servo Taraması
   updateServoMotor();
 
-  // 4. Non-blocking Buzzer & LED
+  // 4. Kısık Sesli Kibar Park İkazı (Buzzer & LED)
   updateAlertActuators();
 
   // 5. Bluetooth
@@ -1256,7 +1213,7 @@ void loop() {
     eyesOpen = !eyesOpen;
   }
 
-  // 7. OLED Güncelleme (80 ms / ~12.5 FPS)
+  // 7. Ekranı Güncelle (80 ms)
   if (now - lastDisplayCycle >= 80) {
     lastDisplayCycle = now;
     updateOLEDDisplay();
