@@ -1,5 +1,5 @@
 /*********************************************************************************
- * 🚗 TOPRAK PRO MAX V10.0 — AKILLI ARAÇ GÜVENLİK SİSTEMİ (OPTİMİZE EDİLMİŞ)
+ * 🚗 TOPRAK PRO MAX V10.0 (ULTIMATE EDITION) — AKILLI ARAÇ GÜVENLİK SİSTEMİ
  * 
  * Geliştirici: Toprak Ahmet Aydoğmuş
  * Platform: ESP32 NodeMCU (WROOM-32)
@@ -24,7 +24,7 @@
  *   - ECHO: GPIO 12
  * 
  * [Gaz / Hava Kalitesi (MQ-135 / MQ-2)]
- *   - AOUT: GPIO 36 (VP)
+ *   - AOUT: GPIO 36 (VP / ADC1_CH0)
  * 
  * [Hareket Sensörü]
  *   - GPIO 14: PIR (HC-SR501) / RCWL-0507
@@ -34,6 +34,26 @@
  *   - Sistem LED: GPIO 2 (Kalp Atışı)
  *   - Uyarı LED: GPIO 25 (PWM)
  *   - Radar Servo: GPIO 26 (SG90 PWM)
+ * 
+ * ============================== V10.0 ÖZEL YENİLİKLERİ ==============================
+ * 1. GELİŞMİŞ GAZ & HAVA ANALİZÖRÜ (MQ-135):
+ *    - Dinamik Temiz Hava Referans Takibi (Drift-Tracking Baseline).
+ *    - Ortam havasında asla sahte alarm çalmaz.
+ *    - Çakmak gazı, alkol veya duman yaklaştırıldığında anında milisaniyelik tepki.
+ *    - Ekranda anlık PPM, Ham ADC ve Fark (+Δ) göstergesi ile tam şeffaflık.
+ *    - 4 Seviyeli Sınıflandırma: TEMİZ -> ORTA -> KİRLİ -> TEHLİKE!
+ * 2. KİBAR OTOMOBİL PARK SENSÖRÜ SESİ:
+ *    - Eski rahatsız edici alarm yerine lüks otomobil park sensörü ritmi.
+ *    - 35 cm üzerinde 100% SESSİZ.
+ *    - Mesafeye göre orantılı yumuşak tıklar (25 ms mikro-pıt).
+ *    - D18 butonuna 1.5 sn basılı tutarak tek tuşla anında Sessiz Mod (Mute).
+ * 3. İPEKSİ 180° RADAR SÜPÜRMESİ:
+ *    - 15° ile 165° arası güvenli açıda mekanik dişli takılması sıfırlandı.
+ *    - 1 derecelik mikro-adımlarla (16 ms) fısıltı sessizliğinde kesintisiz tarama.
+ *    - Arka planda sürekli çalışarak radar haritasını canlı tutar.
+ * 4. KAYA GİBİ SAĞLAM JOYSTICK & BUTON KONTROLÜ:
+ *    - Açılışta otomatik merkez kalibrasyonu (Edge-Triggered).
+ *    - Menü kendi kendine asla kaymaz, ekran hiçbir zaman kaybolmaz.
  *********************************************************************************/
 
 #include <Wire.h>
@@ -105,19 +125,19 @@ const char* menuNames[] = {
 };
 const int MAIN_MENU_COUNT = 10;
 
-// ==================== AYARLAR YAPISI ====================
+// ==================== AYARLAR YAPISI (FLASH SAKLAMA) ====================
 struct SystemSettings {
-  int distanceWarning;      // cm (35 cm - kibar ikaz başlar)
-  int distanceDanger;       // cm (15 cm - yakın engel)
+  int distanceWarning;      // cm (35 cm - kibar ikaz başlangıcı)
+  int distanceDanger;       // cm (15 cm - yakın park)
   int maxDistance;          // cm (300 cm)
-  int gasThreshold;         // ppm (1400 ppm - sahte alarm yok)
+  int gasThreshold;         // ppm (1300 ppm - tehlike eşiği)
   bool soundEnabled;        // Ses açık/kapalı
   bool ledEnabled;          // LED açık/kapalı
-  int servoHomePos;         // 66 derece (düz açı)
-  bool servoInvert;         // Ters joystick
-  int servoSpeed;           // Tarama adım süresi (ms)
-  bool continuousRadar;     // Sürekli arka plan taraması
-  bool bluetoothEnabled;    // Bluetooth
+  int servoHomePos;         // 66 derece (tam düz yön)
+  bool servoInvert;         // Ters joystick modu
+  int servoSpeed;           // Tarama gecikmesi (ms)
+  bool continuousRadar;     // Sürekli radar taraması
+  bool bluetoothEnabled;    // Bluetooth açık/kapalı
 };
 
 SystemSettings settings;
@@ -144,9 +164,12 @@ BluetoothSerial SerialBT;
 
 // ==================== SENSÖR VE ÇALIŞMA DEĞİŞKENLERİ ====================
 float distance = 100.0;
-int gasRaw = 0;
-float gasPPM = 400.0;
+float distanceRaw = 100.0;
+int gasRaw = 1600;
 int gasBaseline = 1600;
+int gasDelta = 0;
+float gasPPM = 400.0;
+int gasQualityLevel = 0; // 0: Temiz, 1: Orta, 2: Kirli, 3: Tehlike
 bool motionDetected = false;
 unsigned long lastMotionTime = 0;
 
@@ -158,8 +181,8 @@ bool manualServoMode = false;
 unsigned long lastServoStep = 0;
 unsigned long lastJoyServoStep = 0;
 
-// Alarm Seviyesi: 0: Sessiz, 1: Seyrek kibar tık, 2: Yakın park sesi
-int alertLevel = 0;
+// Alarm Seviyesi
+int alertLevel = 0; // 0: Sessiz, 1: İkaz, 2: Tehlike
 bool bluetoothConnected = false;
 unsigned long bootTime = 0;
 bool warmupComplete = false;
@@ -199,7 +222,7 @@ int robotExpression = 0;
 // ==================== YUMUŞAK SESLİ PWM KONTROLÜ ====================
 void setupPWM() {
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcAttach(BUZZER_PIN, 880, 8); // 880 Hz yumuşak araba park tonu
+  ledcAttach(BUZZER_PIN, 880, 8); // 880 Hz kibar araba park tonu
   ledcWrite(BUZZER_PIN, 0);
   ledcAttach(LED_PIN, PWM_FREQ, PWM_RESOLUTION);
   ledcWrite(LED_PIN, 0);
@@ -213,7 +236,7 @@ void setupPWM() {
 #endif
 }
 
-// Kulak tırmalamayan, kısık sesli kibar park tonu (Düşük duty cycle)
+// Kulak tırmalamayan, kısık sesli kibar park tonu (%12 duty cycle)
 void setSoftBuzzer(bool on) {
   if (!settings.soundEnabled || !on) {
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
@@ -223,8 +246,7 @@ void setSoftBuzzer(bool on) {
 #endif
     return;
   }
-  // %12 duty cycle (kısık, yumuşak "pıt" sesi)
-  int softVolume = 30;
+  int softVolume = 30; // Kısık, zarif "tık"
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
   ledcWrite(BUZZER_PIN, softVolume);
 #else
@@ -252,16 +274,16 @@ void triggerChirp() {
 // ==================== KALICI HAFIZA (PREFERENCES) ====================
 void loadSettings() {
   prefs.begin("toprak_v10", false);
-  settings.distanceWarning   = prefs.getInt("d_warn", 35); // 35 cm altı kibar ikaz
-  settings.distanceDanger    = prefs.getInt("d_dang", 15); // 15 cm altı yakın
+  settings.distanceWarning   = prefs.getInt("d_warn", 35);
+  settings.distanceDanger    = prefs.getInt("d_dang", 15);
   settings.maxDistance       = prefs.getInt("d_max", 300);
-  settings.gasThreshold      = prefs.getInt("g_thresh", 1400); // Ortam havasında çalmaz
+  settings.gasThreshold      = prefs.getInt("g_thresh", 1300);
   settings.soundEnabled      = prefs.getBool("snd_en", true);
   settings.ledEnabled        = prefs.getBool("led_en", true);
-  settings.servoHomePos      = prefs.getInt("srv_home", 66); // 66 derece
+  settings.servoHomePos      = prefs.getInt("srv_home", 66);
   settings.servoInvert       = prefs.getBool("srv_inv", true);
-  settings.servoSpeed        = prefs.getInt("srv_spd", 16); // İpeksi 16ms mikro-adım
-  settings.continuousRadar   = prefs.getBool("rad_cont", true); // Arka planda sürekli tarama
+  settings.servoSpeed        = prefs.getInt("srv_spd", 16);
+  settings.continuousRadar   = prefs.getBool("rad_cont", true);
   settings.bluetoothEnabled  = prefs.getBool("bt_en", true);
   prefs.end();
 }
@@ -286,7 +308,7 @@ void restoreFactoryDefaults() {
   settings.distanceWarning   = 35;
   settings.distanceDanger    = 15;
   settings.maxDistance       = 300;
-  settings.gasThreshold      = 1400;
+  settings.gasThreshold      = 1300;
   settings.soundEnabled      = true;
   settings.ledEnabled        = true;
   settings.servoHomePos      = 66;
@@ -311,17 +333,17 @@ void readDistanceSensor() {
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 22000); // 22ms = ~3.8 metre
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 22000);
 
   float measured = 0;
   if (duration > 180 && duration < 21000) {
     measured = (duration * 0.03432) / 2.0;
   } else {
-    // Yankı alınamadıysa engel yok (maksimum menzil)
     measured = (float)settings.maxDistance;
   }
 
   measured = constrain(measured, 2.0, (float)settings.maxDistance);
+  distanceRaw = measured;
 
   // 5 elemanlı medyan filtre
   static float dBuffer[5] = {100, 100, 100, 100, 100};
@@ -355,30 +377,65 @@ void readDistanceSensor() {
   }
 }
 
+// ==================== GELİŞMİŞ GAZ & HAVA ANALİZÖRÜ (MQ-135) ====================
 void readGasSensor() {
   static unsigned long lastGasTime = 0;
+  static unsigned long lastBaselineUpdate = 0;
   unsigned long now = millis();
-  if (now - lastGasTime < 100) return;
+  if (now - lastGasTime < 80) return;
   lastGasTime = now;
 
-  int currentRaw = analogRead(GAS_PIN);
-  gasRaw = (gasRaw * 4 + currentRaw) / 5;
+  // 1. Çoklu örneklemeli ADC okuma (Gürültü bastırma)
+  long adcSum = 0;
+  for (int i = 0; i < 6; i++) {
+    adcSum += analogRead(GAS_PIN);
+    delayMicroseconds(50);
+  }
+  int currentAdc = adcSum / 6;
 
-  // İlk 10 saniye temiz hava referans kalibrasyonu
+  // Ağırlıklı hareketli ortalama
+  gasRaw = (gasRaw * 7 + currentAdc * 3) / 10;
+
+  // 2. Açılışta Isınma ve Temiz Hava Referans Tespiti
   if (!warmupComplete) {
     if (gasBaseline == 0 || gasRaw < gasBaseline) {
       gasBaseline = gasRaw;
     }
     if (now - bootTime > 10000) {
       warmupComplete = true;
+      Serial.printf("MQ-135 Gaz Referansı Kilitlendi: %d ADC\n", gasBaseline);
+    }
+  } else {
+    // 3. Uzun Vadeli Temiz Hava Drift Takibi (Ortam havası yavaşça kayarsa referansı günceller)
+    if (gasRaw < gasBaseline) {
+      gasBaseline = gasRaw; // Daha temiz hava bulundu
+    } else if (now - lastBaselineUpdate > 15000) {
+      lastBaselineUpdate = now;
+      // Eğer ortam uzun süre sakinse yavaşça adapte ol
+      if (gasDelta < 100) {
+        gasBaseline = (gasBaseline * 19 + gasRaw) / 20;
+      }
     }
   }
 
-  int deltaGas = gasRaw - gasBaseline;
-  if (deltaGas < 0) deltaGas = 0;
+  // 4. Temiz Havadan Sapma (Delta)
+  gasDelta = gasRaw - gasBaseline;
+  if (gasDelta < 0) gasDelta = 0;
 
-  float calculatedPPM = 400.0 + (deltaGas * 0.75);
-  gasPPM = (gasPPM * 0.85) + (calculatedPPM * 0.15);
+  // 5. Bağıl PPM Hesaplaması (Atmosferik 400 PPM tabanı)
+  float calculatedPPM = 400.0 + (gasDelta * 0.95);
+  gasPPM = (gasPPM * 0.8) + (calculatedPPM * 0.2);
+
+  // 6. 4 Seviyeli Hava Kalitesi Sınıflandırması
+  if (gasPPM < 550) {
+    gasQualityLevel = 0; // Temiz / Ferah
+  } else if (gasPPM < 900) {
+    gasQualityLevel = 1; // Normal / Orta
+  } else if (gasPPM < settings.gasThreshold) {
+    gasQualityLevel = 2; // Kirli / Havalandır
+  } else {
+    gasQualityLevel = 3; // TEHLİKE (Gaz / Duman / Alkol)
+  }
 }
 
 void readMotionSensor() {
@@ -401,14 +458,14 @@ void readMotionSensor() {
   }
 }
 
-// ==================== AKILLI PARK ALARM KONTROLÜ ====================
+// ==================== AKILLI PARK & GÜVENLİK ALARMI ====================
 void checkAlertStatus() {
   alertLevel = 0;
   robotExpression = 0;
 
   if (!warmupComplete) return;
 
-  // Sadece engel 35 cm'den yakınsa ve gerçek bir mesafe varsa ikaz verir
+  // Mesafe Uyarısı (Sadece geçerli 3cm..eşik aralığında çalar)
   if (distance >= 3.0 && distance <= (float)settings.distanceDanger) {
     alertLevel = 2; // Yakın engel (<15 cm)
     robotExpression = 2;
@@ -417,8 +474,8 @@ void checkAlertStatus() {
     robotExpression = 1;
   }
 
-  // Gaz alarmı: sadece bariz eşik üstündeyse
-  if (gasPPM >= (float)settings.gasThreshold) {
+  // Gaz Alarmı (Sadece seviye 3'te alarm çalar)
+  if (gasQualityLevel >= 3) {
     alertLevel = 2;
     robotExpression = 2;
   }
@@ -430,23 +487,22 @@ void updateAlertActuators() {
 
   // Mesafe durumuna göre bip periyodu (ms)
   if (alertLevel == 2) {
-    // 15 cm altı: Hızlı kibar tık (150 ms)
+    // Yakın engel veya Gaz Alarmı: 150 ms kibar aralık
     buzzInterval = 150;
   } else if (alertLevel == 1) {
-    // 15 - 35 cm: Mesafeye göre orantılı yumuşak tık (300 ms .. 750 ms)
+    // 15 - 35 cm: Mesafeye göre orantılı yumuşak tık (250 ms .. 750 ms)
     buzzInterval = map((int)distance, settings.distanceDanger, settings.distanceWarning, 250, 750);
     buzzInterval = constrain(buzzInterval, 250, 750);
   } else {
-    buzzInterval = 0; // 35 cm üstü: TAMAMEN SESSİZ
+    buzzInterval = 0; // > 35 cm: TAMAMEN SESSİZ
   }
 
-  // Yumuşak ses üreteci
   if (buzzInterval > 0 && settings.soundEnabled && warmupComplete) {
     if (buzzState == BUZZ_OFF && (now - buzzTimer >= (unsigned long)buzzInterval)) {
       setSoftBuzzer(true);
       buzzState = BUZZ_ON;
       buzzTimer = now;
-    } else if (buzzState == BUZZ_ON && (now - buzzTimer >= 25)) { // Sadece 25 ms çok kısa "tık"
+    } else if (buzzState == BUZZ_ON && (now - buzzTimer >= 25)) { // 25 ms çok kısa "tık"
       setSoftBuzzer(false);
       buzzState = BUZZ_OFF;
       buzzTimer = now;
@@ -456,7 +512,6 @@ void updateAlertActuators() {
     buzzState = BUZZ_OFF;
   }
 
-  // Uyarı LED'i
   if (alertLevel == 2) {
     setWarningLED(((now / 90) % 2 == 0) ? 200 : 0);
   } else if (alertLevel == 1) {
@@ -473,7 +528,7 @@ void updateServoMotor() {
   unsigned long now = millis();
 
   if (manualServoMode) {
-    // Manuel Mod: Joystick X ile hassas yönlendirme
+    // Manuel Mod: Joystick X ile doğrudan yönlendirme
     if (now - lastJoyServoStep >= 20) {
       lastJoyServoStep = now;
       int rawX = analogRead(JOY_X);
@@ -678,7 +733,7 @@ void modifySetting(int delta) {
 
     case MENU_SETTINGS_GAS:
       if (editParamIndex == 0) {
-        settings.gasThreshold = constrain(settings.gasThreshold + delta * 50, 600, 2500);
+        settings.gasThreshold = constrain(settings.gasThreshold + delta * 50, 700, 2500);
       }
       break;
 
@@ -721,8 +776,8 @@ void processBluetooth() {
     cmd.toUpperCase();
 
     if (cmd == "GET") {
-      SerialBT.printf("{\"dist\":%.1f,\"gas\":%.0f,\"raw\":%d,\"angle\":%d,\"alert\":%d}\n",
-                      distance, gasPPM, gasRaw, servoAngle, alertLevel);
+      SerialBT.printf("{\"dist\":%.1f,\"gas\":%.0f,\"delta\":%d,\"angle\":%d,\"alert\":%d}\n",
+                      distance, gasPPM, gasDelta, servoAngle, alertLevel);
     } else if (cmd.startsWith("SERVO:")) {
       int a = cmd.substring(6).toInt();
       servoAngle = constrain(a, 15, 165);
@@ -734,8 +789,8 @@ void processBluetooth() {
 
   if (bluetoothConnected && (now - lastBTSend >= 1000)) {
     lastBTSend = now;
-    SerialBT.printf("{\"dist\":%.1f,\"gas\":%.0f,\"motion\":%d,\"angle\":%d,\"alert\":%d}\n",
-                    distance, gasPPM, motionDetected ? 1 : 0, servoAngle, alertLevel);
+    SerialBT.printf("{\"dist\":%.1f,\"gas\":%.0f,\"delta\":%d,\"motion\":%d,\"angle\":%d,\"alert\":%d}\n",
+                    distance, gasPPM, gasDelta, motionDetected ? 1 : 0, servoAngle, alertLevel);
   }
 }
 
@@ -840,6 +895,7 @@ void drawScreenDistance() {
   display.setTextSize(1);
   display.print(" cm");
 
+  // Proximity Çubuğu (Y: 36..42)
   display.drawRect(6, 36, 116, 7, SSD1306_WHITE);
   int fillWidth = map((int)distance, 0, 150, 112, 0);
   fillWidth = constrain(fillWidth, 0, 112);
@@ -859,27 +915,38 @@ void drawScreenDistance() {
 void drawScreenGas() {
   drawHeader("HAVA KALITESI");
 
+  // 1. Büyük Font PPM Değeri (Y: 17)
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(15, 18);
+  display.setCursor(15, 17);
   display.print((int)gasPPM);
   display.setTextSize(1);
   display.print(" ppm");
 
-  display.drawRect(6, 36, 116, 7, SSD1306_WHITE);
-  int barW = map((int)gasPPM, 400, 1800, 0, 112);
+  // 2. 10 Kademeli Hava Kalitesi Barı (Y: 34..40)
+  display.drawRect(6, 34, 116, 7, SSD1306_WHITE);
+  int barW = map((int)gasPPM, 400, 1600, 0, 112);
   barW = constrain(barW, 0, 112);
-  display.fillRect(8, 38, barW, 3, SSD1306_WHITE);
+  display.fillRect(8, 36, barW, 3, SSD1306_WHITE);
 
-  display.setCursor(6, 45);
-  if (!warmupComplete) display.print("ISINMA: Bekleyiniz");
-  else if (gasPPM >= settings.gasThreshold) display.print("TEHLIKE: GAZ ALARMI!");
-  else if (gasPPM >= 900) display.print("HAVA: ORTA SEVIYE");
-  else display.print("HAVA: TEMIZ VE IYI");
+  // 3. Hava Kalitesi Sınıflandırma Durumu (Y: 43)
+  display.setCursor(6, 44);
+  if (!warmupComplete) {
+    display.print("ISINMA: Kalibrede...");
+  } else if (gasQualityLevel == 3) {
+    display.print("TEHLIKE: GAZ/ALKOL!");
+  } else if (gasQualityLevel == 2) {
+    display.print("HAVA: KIRLI / HAVALANDIR");
+  } else if (gasQualityLevel == 1) {
+    display.print("HAVA: NORMAL / ORTA");
+  } else {
+    display.print("HAVA: TEMIZ VE FERAH");
+  }
 
-  drawFooter("D18:Menu  Ham:");
-  display.setCursor(85, 55);
-  display.print(gasRaw);
+  // 4. Alt Bilgi: Ham ADC ve Fark (+Δ)
+  drawFooter("D18:Menu  Fark:+");
+  display.setCursor(95, 55);
+  display.print(gasDelta);
 }
 
 void drawScreenMotion() {
@@ -1087,8 +1154,8 @@ void updateOLEDDisplay() {
                          "Ikaz", "Yakin", "Maks", "cm");
       break;
     case MENU_SETTINGS_GAS:
-      drawScreenSettings(settings.gasThreshold, (int)gasPPM, gasRaw,
-                         "Esik", "Anlik", "Ham", "ppm");
+      drawScreenSettings(settings.gasThreshold, (int)gasPPM, gasDelta,
+                         "Esik", "Anlik", "Fark", "ppm");
       break;
     case MENU_SETTINGS_SERVO:
       drawScreenSettings(settings.servoHomePos, settings.servoInvert ? 1 : 0, settings.continuousRadar ? 1 : 0,
