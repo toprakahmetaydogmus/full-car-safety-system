@@ -328,8 +328,11 @@ void restoreFactoryDefaults() {
 void readDistanceSensor() {
   static unsigned long lastTriggerTime = 0;
   unsigned long now = millis();
-  if (now - lastTriggerTime < 45) return;
+  if (now - lastTriggerTime < 65) return; // 65ms periyot: Yankıların sönümlenmesini sağlar, işlemciyi kilitlemez
   lastTriggerTime = now;
+
+  // Yankı pini hala meşgulse beklemeden atla
+  if (digitalRead(ECHO_PIN) == HIGH) return;
 
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -337,10 +340,10 @@ void readDistanceSensor() {
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 16000); // 16ms zaman aşımı (~275 cm menzil): Döngüyü gereksiz bekletmez
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 12000); // 12ms zaman aşımı (~200 cm menzil): Servoyu ASLA duraksatmaz
 
   float measured = 0;
-  if (duration > 180 && duration < 15500) {
+  if (duration > 180 && duration < 11800) {
     measured = (duration * 0.03432) / 2.0;
   } else {
     measured = (float)settings.maxDistance;
@@ -558,29 +561,35 @@ void updateAlertActuators() {
 }
 
 // ==================== "TIK TIK" HIZLI & SERT GEÇİŞLİ SERVO HAREKETİ ====================
+unsigned long lastManualJoystickTime = 0;
+
 void updateServoMotor() {
   unsigned long now = millis();
 
-  if (manualServoMode) {
-    // Manuel Mod: Joystick X ile 5'er derecelik güçlü ve kararlı adımlar
+  // 1. Manuel Joystick X Kontrolü Tespiti
+  int rawX = analogRead(JOY_X);
+  int deltaX = rawX - joyCenterX;
+  bool joystickMovedX = (abs(deltaX) > 280);
+
+  if (joystickMovedX) {
+    // Kullanıcı joystick'i sağa/sola itti: ANINDA MANUEL KONTROL DEVREYE GİRER!
+    lastManualJoystickTime = now;
     if (now - lastJoyServoStep >= 25) {
       lastJoyServoStep = now;
-      int rawX = analogRead(JOY_X);
-      int deltaX = rawX - joyCenterX;
-
-      if (deltaX < -320) {
+      if (deltaX < -280) {
         servoAngle += (settings.servoInvert ? 5 : -5);
-      } else if (deltaX > 320) {
+      } else if (deltaX > 280) {
         servoAngle += (settings.servoInvert ? -5 : 5);
       }
-
       servoAngle = constrain(servoAngle, 20, 160);
       radarServo.write(servoAngle);
       stats.servoSteps++;
     }
-  } else {
-    // "Tık Tık" Hızlı, Sert ve Kararlı Radar Taraması (5'er derecelik adımlar, 22ms seri aralık)
-    // Motor her adımda tam torkla 5 derece zıplar ("tık tık"), seri ve akıcı döner!
+  } else if (manualServoMode) {
+    // Manuel servo menüsündeyken ve joystick serbestken son konumda bekle
+    return;
+  } else if (now - lastManualJoystickTime >= 1000) {
+    // Joystick serbest bırakıldıktan 1 saniye sonra KESİNTİSİZ OTOMATİK TARAMAYA DEVAM ET ("hep çalışır")!
     if (now - lastServoStep >= 22) {
       lastServoStep = now;
       if (scanDirection) {
